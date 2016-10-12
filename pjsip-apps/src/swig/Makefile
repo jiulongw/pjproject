@@ -2,9 +2,9 @@ include ../../../build.mak
 
 ifneq ($(findstring android,$(TARGET_NAME)),)
   # no python for android
-  DIRS = java
+  DIRS = java csharp
 else
-  DIRS = python java
+  DIRS = python java csharp
 endif
 
 export SWIG_FLAGS=-I../../../../pjlib/include \

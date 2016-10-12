@@ -1,0 +1,14 @@
+build.mak
+cc-auto.mak
+config.log
+config.status
+config_auto.h
+m_auto.h
+os-auto.mak
+os_auto.h
+pjlib/include/pj/config_site.h
+sip_autoconf.h
+*.depend
+bin
+output
+lib
