@@ -22,7 +22,6 @@
 #include <pjmedia/rtp.h>
 #include <pjmedia/rtcp.h>
 #include <pjmedia/jbuf.h>
-#include <pjmedia/stream_common.h>
 #include <pj/array.h>
 #include <pj/assert.h>
 #include <pj/ctype.h>
@@ -2005,6 +2004,7 @@ PJ_DEF(pj_status_t) pjmedia_stream_create( pjmedia_endpt *endpt,
     pj_pool_t *own_pool = NULL;
     char *p;
     pj_status_t status;
+    pjmedia_transport_attach_param att_param;
 
     PJ_ASSERT_RETURN(endpt && info && p_stream, PJ_EINVAL);
 
@@ -2346,12 +2346,17 @@ PJ_DEF(pj_status_t) pjmedia_stream_create( pjmedia_endpt *endpt,
 	stream->out_rtcp_pkt_size = PJMEDIA_MAX_MTU;
 
     stream->out_rtcp_pkt = pj_pool_alloc(pool, stream->out_rtcp_pkt_size);
+    att_param.stream = stream;
+    att_param.media_type = PJMEDIA_TYPE_AUDIO;
+    att_param.user_data = stream;
+    pj_sockaddr_cp(&att_param.rem_addr, &info->rem_addr);
+    pj_sockaddr_cp(&att_param.rem_rtcp, &info->rem_rtcp);
+    att_param.addr_len = pj_sockaddr_get_len(&info->rem_addr);
+    att_param.rtp_cb = &on_rx_rtp;
+    att_param.rtcp_cb = &on_rx_rtcp;
 
     /* Only attach transport when stream is ready. */
-    status = pjmedia_transport_attach(tp, stream, &info->rem_addr,
-				      &info->rem_rtcp,
-				      pj_sockaddr_get_len(&info->rem_addr),
-                                      &on_rx_rtp, &on_rx_rtcp);
+    status = pjmedia_transport_attach2(tp, &att_param);
     if (status != PJ_SUCCESS)
 	goto err_cleanup;
 
@@ -2915,5 +2920,19 @@ pjmedia_stream_send_rtcp_bye( pjmedia_stream *stream )
 	return send_rtcp(stream, PJ_TRUE, PJ_TRUE, PJ_FALSE);
     }
 
+    return PJ_SUCCESS;
+}
+
+
+/**
+ * Get RTP session information from stream.
+ */
+PJ_DEF(pj_status_t)
+pjmedia_stream_get_rtp_session_info(pjmedia_stream *stream,
+				    pjmedia_stream_rtp_sess_info *session_info)
+{
+    session_info->rx_rtp = &stream->dec->rtp;
+    session_info->tx_rtp = &stream->enc->rtp;
+    session_info->rtcp = &stream->rtcp;
     return PJ_SUCCESS;
 }

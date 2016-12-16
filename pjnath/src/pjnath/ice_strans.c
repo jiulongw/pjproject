@@ -164,6 +164,7 @@ typedef struct pj_ice_strans_comp
 	unsigned	 err_cnt;	/**< TURN disconnected count.	*/
     } turn[PJ_ICE_MAX_TURN];
 
+    pj_bool_t		 creating;	/**< Is creating the candidates?*/
     unsigned		 cand_cnt;	/**< # of candidates/aliaes.	*/
     pj_ice_sess_cand	 cand_list[PJ_ICE_ST_MAX_CAND];	/**< Cand array	*/
 
@@ -665,6 +666,7 @@ static pj_status_t create_comp(pj_ice_strans *ice_st, unsigned comp_id)
     comp = PJ_POOL_ZALLOC_T(ice_st->pool, pj_ice_strans_comp);
     comp->ice_st = ice_st;
     comp->comp_id = comp_id;
+    comp->creating = PJ_TRUE;
 
     ice_st->comp[comp_id-1] = comp;
 
@@ -692,6 +694,9 @@ static pj_status_t create_comp(pj_ice_strans *ice_st, unsigned comp_id)
 	    //return status;
 	}
     }
+
+    /* Done creating all the candidates */
+    comp->creating = PJ_FALSE;
 
     /* It's possible that we end up without any candidates */
     if (comp->cand_cnt == 0) {
@@ -931,6 +936,11 @@ static void sess_init_update(pj_ice_strans *ice_st)
     for (i=0; i<ice_st->comp_cnt; ++i) {
 	unsigned j;
 	pj_ice_strans_comp *comp = ice_st->comp[i];
+
+	/* This function can be called when all components or candidates
+	 * have not been created.
+	 */
+	if (!comp || comp->creating) return;
 
 	for (j=0; j<comp->cand_cnt; ++j) {
 	    pj_ice_sess_cand *cand = &comp->cand_list[j];
@@ -1307,7 +1317,7 @@ PJ_DEF(pj_status_t) pj_ice_strans_start_ice( pj_ice_strans *ice_st,
 		}
 	    }
 
-	    if (count) {
+	    if (count && !comp->turn[n].err_cnt && comp->turn[n].sock) {
 		status = pj_turn_sock_set_perm(comp->turn[n].sock, count,
 					       addrs, 0);
 		if (status != PJ_SUCCESS) {
@@ -1981,11 +1991,65 @@ static void turn_on_state(pj_turn_sock *turn_sock, pj_turn_state_t old_state,
 	/* Set default candidate to relay */
 	comp->default_cand = (unsigned)(cand - comp->cand_list);
 
+	/* Prefer IPv4 relay as default candidate for better connectivity
+	 * with IPv4 endpoints.
+	 */
+	if (cand->addr.addr.sa_family != pj_AF_INET()) {
+	    for (i=0; i<comp->cand_cnt; ++i) {
+		if (comp->cand_list[i].type == PJ_ICE_CAND_TYPE_RELAYED &&
+		    comp->cand_list[i].addr.addr.sa_family == pj_AF_INET() &&
+		    comp->cand_list[i].status == PJ_SUCCESS)
+		{
+		    comp->default_cand = i;
+		    break;
+		}
+	    }
+	}
+
 	PJ_LOG(4,(comp->ice_st->obj_name,
 		  "Comp %d: TURN allocation complete, relay address is %s",
 		  comp->comp_id,
 		  pj_sockaddr_print(&rel_info.relay_addr, ipaddr,
 				     sizeof(ipaddr), 3)));
+
+	sess_init_update(comp->ice_st);
+
+    } else if ((old_state == PJ_TURN_STATE_RESOLVING ||
+                old_state == PJ_TURN_STATE_RESOLVED) &&
+	       new_state == PJ_TURN_STATE_DESTROYING)
+    {
+	pj_ice_sess_cand *cand = NULL;
+	unsigned i;
+
+	/* DNS resolution or TURN transport creation/allocation
+	 * has failed.
+	 */
+	++comp->turn[tp_idx].err_cnt;
+
+	/* Unregister ourself from the TURN relay */
+	pj_turn_sock_set_user_data(turn_sock, NULL);
+	comp->turn[tp_idx].sock = NULL;
+
+	/* Wait until initialization completes */
+	pj_grp_lock_acquire(comp->ice_st->grp_lock);
+
+	/* Find relayed candidate in the component */
+	for (i=0; i<comp->cand_cnt; ++i) {
+	    if (comp->cand_list[i].type == PJ_ICE_CAND_TYPE_RELAYED &&
+		comp->cand_list[i].transport_id == data->transport_id)
+	    {
+		cand = &comp->cand_list[i];
+		break;
+	    }
+	}
+
+	pj_grp_lock_release(comp->ice_st->grp_lock);
+
+	/* If the error happens during pj_turn_sock_create() or
+	 * pj_turn_sock_alloc(), the candidate hasn't been added
+	 * to the list.
+	 */
+	if (cand) cand->status = PJ_ERESOLVE;
 
 	sess_init_update(comp->ice_st);
 

@@ -569,7 +569,8 @@ on_error:
 static void cleanup_call_setting_flag(pjsua_call_setting *opt)
 {
     opt->flag &= ~(PJSUA_CALL_UNHOLD | PJSUA_CALL_UPDATE_CONTACT |
-		   PJSUA_CALL_NO_SDP_OFFER);
+		   PJSUA_CALL_NO_SDP_OFFER | PJSUA_CALL_REINIT_MEDIA |
+		   PJSUA_CALL_UPDATE_VIA);
 }
 
 
@@ -608,12 +609,17 @@ static pj_status_t apply_call_setting(pjsua_call *call,
 
     call->opt = *opt;
 
+    if (call->opt.flag & PJSUA_CALL_REINIT_MEDIA) {
+    	pjsua_media_channel_deinit(call->index);
+    }
+
     /* If call is established or media channel hasn't been initialized,
      * reinit media channel.
      */
     if ((call->inv && call->inv->state == PJSIP_INV_STATE_CONNECTING &&
          call->med_cnt == 0) ||
-        (call->inv && call->inv->state == PJSIP_INV_STATE_CONFIRMED))
+        (call->inv && call->inv->state == PJSIP_INV_STATE_CONFIRMED) ||
+        (call->opt.flag & PJSUA_CALL_REINIT_MEDIA))
     {
 	pjsip_role_e role = rem_sdp? PJSIP_ROLE_UAS : PJSIP_ROLE_UAC;
 	pj_status_t status;
@@ -631,6 +637,27 @@ static pj_status_t apply_call_setting(pjsua_call *call,
     }
 
     return PJ_SUCCESS;
+}
+
+static void dlg_set_via(pjsip_dialog *dlg, pjsua_acc *acc)
+{
+    if (acc->cfg.allow_via_rewrite && acc->via_addr.host.slen > 0) {
+        pjsip_dlg_set_via_sent_by(dlg, &acc->via_addr, acc->via_tp);
+    } else if (!pjsua_sip_acc_is_using_stun(acc->index)) {
+   	/* Choose local interface to use in Via if acc is not using
+   	 * STUN. See https://trac.pjsip.org/repos/ticket/1804
+   	 */
+   	pjsip_host_port via_addr;
+   	const void *via_tp;
+
+   	if (pjsua_acc_get_uac_addr(acc->index, dlg->pool, &acc->cfg.id,
+   				   &via_addr, NULL, NULL,
+   				   &via_tp) == PJ_SUCCESS)
+   	{
+   	    pjsip_dlg_set_via_sent_by(dlg, &via_addr,
+   	                              (pjsip_transport*)via_tp);
+   	}
+    }
 }
 
 /*
@@ -772,23 +799,7 @@ PJ_DEF(pj_status_t) pjsua_call_make_call(pjsua_acc_id acc_id,
      */
     pjsip_dlg_inc_lock(dlg);
 
-    if (acc->cfg.allow_via_rewrite && acc->via_addr.host.slen > 0) {
-        pjsip_dlg_set_via_sent_by(dlg, &acc->via_addr, acc->via_tp);
-    } else if (!pjsua_sip_acc_is_using_stun(acc_id)) {
-   	/* Choose local interface to use in Via if acc is not using
-   	 * STUN. See https://trac.pjsip.org/repos/ticket/1804
-   	 */
-   	pjsip_host_port via_addr;
-   	const void *via_tp;
-
-   	if (pjsua_acc_get_uac_addr(acc_id, dlg->pool, &acc->cfg.id,
-   				   &via_addr, NULL, NULL,
-   				   &via_tp) == PJ_SUCCESS)
-   	{
-   	    pjsip_dlg_set_via_sent_by(dlg, &via_addr,
-   	                              (pjsip_transport*)via_tp);
-   	}
-    }
+    dlg_set_via(dlg, acc);
 
     /* Calculate call's secure level */
     call->secure_level = get_secure_level(acc_id, dest_uri);
@@ -2494,6 +2505,12 @@ PJ_DEF(pj_status_t) pjsua_call_set_hold2(pjsua_call_id call_id,
 	new_contact = &pjsua_var.acc[call->acc_id].contact;
     }
 
+    if ((options & PJSUA_CALL_UPDATE_VIA) &&
+	pjsua_acc_is_valid(call->acc_id))
+    {
+    	dlg_set_via(call->inv->dlg, &pjsua_var.acc[call->acc_id]);
+    }
+
     /* Create re-INVITE with new offer */
     status = pjsip_inv_reinvite( call->inv, new_contact, sdp, &tdata);
     if (status != PJ_SUCCESS) {
@@ -2615,6 +2632,12 @@ PJ_DEF(pj_status_t) pjsua_call_reinvite2(pjsua_call_id call_id,
 	new_contact = &pjsua_var.acc[call->acc_id].contact;
     }
 
+    if ((call->opt.flag & PJSUA_CALL_UPDATE_VIA) &&
+	pjsua_acc_is_valid(call->acc_id))
+    {
+    	dlg_set_via(call->inv->dlg, &pjsua_var.acc[call->acc_id]);
+    }
+
     /* Create re-INVITE with new offer */
     status = pjsip_inv_reinvite( call->inv, new_contact, sdp, &tdata);
     if (status != PJ_SUCCESS) {
@@ -2722,6 +2745,12 @@ PJ_DEF(pj_status_t) pjsua_call_update2(pjsua_call_id call_id,
 	    pjsua_acc_is_valid(call->acc_id))
     {
 	new_contact = &pjsua_var.acc[call->acc_id].contact;
+    }
+
+    if ((call->opt.flag & PJSUA_CALL_UPDATE_VIA) &&
+	pjsua_acc_is_valid(call->acc_id))
+    {
+	dlg_set_via(call->inv->dlg, &pjsua_var.acc[call->acc_id]);
     }
 
     /* Create UPDATE with new offer */
@@ -2840,8 +2869,11 @@ PJ_DEF(pj_status_t) pjsua_call_xfer_replaces( pjsua_call_id call_id,
     char str_dest_buf[PJSIP_MAX_URL_SIZE*2];
     pj_str_t str_dest;
     int len;
+    char call_id_dest_buf[PJSIP_MAX_URL_SIZE * 2];
+    int call_id_len;
     pjsip_uri *uri;
     pj_status_t status;
+    const pjsip_parser_const_t *pconst;
 
 
     PJ_ASSERT_RETURN(call_id>=0 && call_id<(int)pjsua_var.ua_cfg.max_calls,
@@ -2886,7 +2918,22 @@ PJ_DEF(pj_status_t) pjsua_call_xfer_replaces( pjsua_call_id call_id,
     }
 
     str_dest.slen += len;
-
+	
+    /* This uses the the same scanner definition used for SIP parsing 
+     * to escape the call-id in the refer.
+     *
+     * A common pattern for call-ids is: name@domain. The '@' character, 
+     * when used in a URL parameter, throws off many SIP parsers. 
+     * URL escape it based off of the allowed characters for header values.
+    */
+    pconst = pjsip_parser_const();	
+    call_id_len = pj_strncpy2_escape(call_id_dest_buf, &dest_dlg->call_id->id,
+     				     PJ_ARRAY_SIZE(call_id_dest_buf),
+     				     &pconst->pjsip_HDR_CHAR_SPEC);
+    if (call_id_len < 0) {
+    	status = PJSIP_EURITOOLONG;
+    	goto on_error;
+    }
 
     /* Build the URI */
     len = pj_ansi_snprintf(str_dest_buf + str_dest.slen,
@@ -2897,8 +2944,8 @@ PJ_DEF(pj_status_t) pjsua_call_xfer_replaces( pjsua_call_id call_id,
 			   "%%3Bfrom-tag%%3D%.*s>",
 			   ((options&PJSUA_XFER_NO_REQUIRE_REPLACES) ?
 			    "" : "Require=replaces&"),
-			   (int)dest_dlg->call_id->id.slen,
-			   dest_dlg->call_id->id.ptr,
+			   call_id_len,
+			   call_id_dest_buf,
 			   (int)dest_dlg->remote.info->tag.slen,
 			   dest_dlg->remote.info->tag.ptr,
 			   (int)dest_dlg->local.info->tag.slen,
@@ -4106,13 +4153,13 @@ static void pjsua_call_on_rx_offer(pjsip_inv_session *inv,
 	goto on_return;
     }
 
+    cleanup_call_setting_flag(&call->opt);
+
     if (pjsua_var.ua_cfg.cb.on_call_rx_offer) {
 	pjsip_status_code code = PJSIP_SC_OK;
 	pjsua_call_setting opt;
 
-	cleanup_call_setting_flag(&call->opt);
 	opt = call->opt;
-
 	(*pjsua_var.ua_cfg.cb.on_call_rx_offer)(call->index, offer, NULL,
 						&code, &opt);
 
@@ -4238,8 +4285,9 @@ static void pjsua_call_on_create_offer(pjsip_inv_session *inv,
     }
 #endif
 
+    cleanup_call_setting_flag(&call->opt);
+
     if (pjsua_var.ua_cfg.cb.on_call_tx_offer) {
-	cleanup_call_setting_flag(&call->opt);
 	(*pjsua_var.ua_cfg.cb.on_call_tx_offer)(call->index, NULL,
 						&call->opt);
     }

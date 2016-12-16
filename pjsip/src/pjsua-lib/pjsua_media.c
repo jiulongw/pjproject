@@ -926,6 +926,19 @@ static pj_status_t create_ice_media_transport(
     if (acc_cfg->turn_cfg.enable_turn) {
 	ice_cfg.turn_tp_cnt = 1;
 	pj_ice_strans_turn_cfg_default(&ice_cfg.turn_tp[0]);
+	if (use_ipv6 && PJ_ICE_MAX_TURN >= 3) {
+	    ice_cfg.turn_tp_cnt = 3;
+
+	    pj_ice_strans_turn_cfg_default(&ice_cfg.turn_tp[1]);
+	    ice_cfg.turn_tp[1].af = pj_AF_INET6();
+
+	    /* Additional candidate: IPv4 relay via IPv6 TURN server */
+	    pj_ice_strans_turn_cfg_default(&ice_cfg.turn_tp[2]);
+	    ice_cfg.turn_tp[2].af = pj_AF_INET6();
+	    ice_cfg.turn_tp[2].alloc_param.af = pj_AF_INET();
+	}
+
+	/* Configure TURN server */
 	status = parse_host_port(&acc_cfg->turn_cfg.turn_server,
 				 &ice_cfg.turn_tp[0].server,
 				 &ice_cfg.turn_tp[0].port);
@@ -933,6 +946,8 @@ static pj_status_t create_ice_media_transport(
 	    PJ_LOG(1,(THIS_FILE, "Invalid TURN server setting"));
 	    return PJ_EINVAL;
 	}
+
+	/* Configure TURN connection settings and credential */
 	if (ice_cfg.turn_tp[0].port == 0)
 	    ice_cfg.turn_tp[0].port = 3479;
 	ice_cfg.turn_tp[0].conn_type = acc_cfg->turn_cfg.turn_conn_type;
@@ -940,12 +955,37 @@ static pj_status_t create_ice_media_transport(
 		  &acc_cfg->turn_cfg.turn_auth_cred,
 		  sizeof(ice_cfg.turn_tp[0].auth_cred));
 
-	/* Copy QoS setting to TURN setting */
+	if (use_ipv6 && ice_cfg.turn_tp_cnt > 1) {
+	    ice_cfg.turn_tp[1].server    = ice_cfg.turn_tp[0].server;
+	    ice_cfg.turn_tp[1].port      = ice_cfg.turn_tp[0].port;
+	    ice_cfg.turn_tp[1].conn_type = ice_cfg.turn_tp[0].conn_type;
+	    pj_memcpy(&ice_cfg.turn_tp[1].auth_cred, 
+		      &acc_cfg->turn_cfg.turn_auth_cred,
+		      sizeof(ice_cfg.turn_tp[1].auth_cred));
+
+	    ice_cfg.turn_tp[2].server    = ice_cfg.turn_tp[0].server;
+	    ice_cfg.turn_tp[2].port      = ice_cfg.turn_tp[0].port;
+	    ice_cfg.turn_tp[2].conn_type = ice_cfg.turn_tp[0].conn_type;
+	    pj_memcpy(&ice_cfg.turn_tp[2].auth_cred, 
+		      &acc_cfg->turn_cfg.turn_auth_cred,
+		      sizeof(ice_cfg.turn_tp[2].auth_cred));
+	}
+
+	/* Configure QoS setting */
 	ice_cfg.turn_tp[0].cfg.qos_type = cfg->qos_type;
 	pj_memcpy(&ice_cfg.turn_tp[0].cfg.qos_params, &cfg->qos_params,
 		  sizeof(cfg->qos_params));
+	if (use_ipv6 && ice_cfg.turn_tp_cnt > 1) {
+	    ice_cfg.turn_tp[1].cfg.qos_type = cfg->qos_type;
+	    pj_memcpy(&ice_cfg.turn_tp[1].cfg.qos_params, &cfg->qos_params,
+		      sizeof(cfg->qos_params));
 
-	/* Copy binding port setting to TURN setting */
+	    ice_cfg.turn_tp[2].cfg.qos_type = cfg->qos_type;
+	    pj_memcpy(&ice_cfg.turn_tp[2].cfg.qos_params, &cfg->qos_params,
+		      sizeof(cfg->qos_params));
+	}
+
+	/* Configure binding address */
 	pj_sockaddr_init(ice_cfg.turn_tp[0].af, &ice_cfg.turn_tp[0].cfg.bound_addr,
 			 &cfg->bound_addr, (pj_uint16_t)cfg->port);
 	ice_cfg.turn_tp[0].cfg.port_range = (pj_uint16_t)cfg->port_range;
@@ -953,8 +993,27 @@ static pj_status_t create_ice_media_transport(
 	    ice_cfg.turn_tp[0].cfg.port_range = 
 				 (pj_uint16_t)(pjsua_var.ua_cfg.max_calls * 10);
 
+	if (use_ipv6 && ice_cfg.turn_tp_cnt > 1) {
+	    pj_str_t IN6_ADDR_ANY = {"0", 1};
+	    pj_sockaddr_init(pj_AF_INET6(),
+			     &ice_cfg.turn_tp[1].cfg.bound_addr,
+			     &IN6_ADDR_ANY, (pj_uint16_t)cfg->port);
+	    ice_cfg.turn_tp[1].cfg.port_range =
+			    ice_cfg.turn_tp[0].cfg.port_range;
+
+	    pj_sockaddr_init(pj_AF_INET6(),
+			     &ice_cfg.turn_tp[2].cfg.bound_addr,
+			     &IN6_ADDR_ANY, (pj_uint16_t)cfg->port);
+	    ice_cfg.turn_tp[2].cfg.port_range =
+			    ice_cfg.turn_tp[0].cfg.port_range;
+	}
+
 	/* Configure max packet size */
 	ice_cfg.turn_tp[0].cfg.max_pkt_size = PJMEDIA_MAX_MRU;
+	if (use_ipv6 && ice_cfg.turn_tp_cnt > 1) {
+	    ice_cfg.turn_tp[1].cfg.max_pkt_size = PJMEDIA_MAX_MRU;
+	    ice_cfg.turn_tp[2].cfg.max_pkt_size = PJMEDIA_MAX_MRU;
+	}
     }
 
     pj_bzero(&ice_cb, sizeof(pjmedia_ice_cb));
@@ -1916,7 +1975,7 @@ pj_status_t pjsua_media_channel_init(pjsua_call_id call_id,
 	 * media from existing media.
 	 * Otherwise, apply media count from the call setting directly.
 	 */
-	if (reinit) {
+	if (reinit && (call->opt.flag & PJSUA_CALL_REINIT_MEDIA) == 0) {
 
 	    /* We are sending reoffer, check media count for each media type
 	     * from the existing call media list.
@@ -2252,9 +2311,18 @@ pj_status_t pjsua_media_channel_create_sdp(pjsua_call_id call_id,
 			const pjmedia_sdp_session *s_;
 			pjmedia_sdp_neg_get_active_local(call->inv->neg, &s_);
 
-			pj_assert(mi < s_->media_count);
-			m = pjmedia_sdp_media_clone(pool, s_->media[mi]);
-			m->desc.port = 0;
+			if (mi < s_->media_count) {
+			    m = pjmedia_sdp_media_clone(pool, s_->media[mi]);
+			    m->desc.port = 0;
+			} else {
+			    /* Remote may have removed some media lines in
+			     * previous negotiations. However, since our
+			     * media count may never decrease (as per
+			     * the RFC), we'll just offer unknown media here.
+			     */
+		    	    m->desc.media = pj_str("unknown");
+		            m->desc.fmt[0] = pj_str("0");
+			}
 		    }
 		    break;
 		}
@@ -3164,7 +3232,7 @@ pj_status_t pjsua_media_channel_update(pjsua_call_id call_id,
 
 #endif
 	} else {
-	    status = PJMEDIA_EINVALIMEDIATYPE;
+	    status = PJMEDIA_EUNSUPMEDIATYPE;
 	}
 
 	/* Close the transport of deactivated media, need this here as media
@@ -3193,8 +3261,15 @@ on_check_med_status:
 	    call_med->state = PJSUA_CALL_MEDIA_ERROR;
 	    call_med->dir = PJMEDIA_DIR_NONE;
 
-	    PJ_PERROR(1,(THIS_FILE, status, "Error updating media call%02d:%d",
-		         call_id, mi));
+	    if (status != PJMEDIA_EUNSUPMEDIATYPE) {
+		PJ_PERROR(1, (THIS_FILE, status, "Error updating media "
+		              "call%02d:%d", call_id, mi));
+	    } else {
+		PJ_PERROR(3, (THIS_FILE, status, "Skipped updating media "
+		              "call%02d:%d (media type=%s)", call_id, mi, 
+			      pjmedia_type_name(call_med->type)));
+	    }
+
 	} else {
 	    /* Only set 'got_media' flag if this media is not disabled */
 	    if (local_sdp->media[mi]->desc.port != 0)
