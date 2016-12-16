@@ -386,6 +386,13 @@ AudioMediaRecorder::~AudioMediaRecorder()
 {
     if (recorderId != PJSUA_INVALID_ID) {
 	unregisterMediaPort();
+
+	pjmedia_port* port;
+	pj_status_t status = pjsua_recorder_get_port(recorderId, &port);
+	if (status == PJ_SUCCESS && port->info.signature == PJMEDIA_SIG_PORT_MEM_CAPTURE) {
+	    pjmedia_mem_capture_set_eof_cb(port, this, eof_false_cb);
+	}
+
 	pjsua_recorder_destroy(recorderId);
     }
 }
@@ -413,6 +420,32 @@ void AudioMediaRecorder::createRecorder(const string &file_name,
 
     /* Get media port id. */
     id = pjsua_recorder_get_conf_port(recorderId);
+
+    registerMediaPort(NULL);
+}
+
+void AudioMediaRecorder::createMemoryRecorder(void* buffer,
+					      pj_size_t buffer_size,
+					      unsigned options)
+					      throw(Error)
+{
+    if (recorderId != PJSUA_INVALID_ID) {
+	PJSUA2_RAISE_ERROR(PJ_EEXISTS);
+    }
+
+    PJSUA2_CHECK_EXPR( pjsua_memory_recorder_create(buffer,
+						    buffer_size,
+						    options,
+						    &recorderId) );
+
+    /* Get media port id. */
+    id = pjsua_recorder_get_conf_port(recorderId);
+
+    pjmedia_port* port;
+    pj_status_t status = pjsua_recorder_get_port(recorderId, &port);
+    if (status == PJ_SUCCESS) {
+	pjmedia_mem_capture_set_eof_cb(port, this, eof_cb);
+    }
 
     registerMediaPort(NULL);
 }

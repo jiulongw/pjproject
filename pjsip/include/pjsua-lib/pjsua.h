@@ -6449,6 +6449,21 @@ PJ_DECL(pj_status_t) pjsua_recorder_create(const pj_str_t *filename,
 					   unsigned options,
 					   pjsua_recorder_id *p_id);
 
+/**
+ * Create a memory recorder, and automatically connect this recorder to
+ * the conference bridge.
+ *
+ * @param buffer	Output buffer.
+ * @param buffer_size	Size of the output buffer.
+ * @param options	Optional options.
+ * @param p_id		Pointer to receive the recorder instance.
+ *
+ * @return		PJ_SUCCESS on success, or the appropriate error code.
+ */
+PJ_DECL(pj_status_t) pjsua_memory_recorder_create(void* buffer,
+						 pj_size_t buffer_size,
+						 unsigned options,
+						 pjsua_recorder_id *p_id);
 
 /**
  * Get conference port associated with recorder.

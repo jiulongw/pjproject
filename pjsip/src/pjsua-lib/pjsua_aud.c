@@ -1447,6 +1447,94 @@ on_return:
     return status;
 }
 
+/*
+ * Create a in memory recorder, and automatically connect this recorder to
+ * the conference bridge.
+ */
+PJ_DEF(pj_status_t) pjsua_memory_recorder_create(void* buffer,
+						 pj_size_t buffer_size,
+						 unsigned options,
+						 pjsua_recorder_id *p_id)
+{
+    unsigned slot, recorder_id;
+    pj_pool_t *pool = NULL;
+    pjmedia_port *port;
+    pj_status_t status = PJ_SUCCESS;
+
+    /* buffer must be valid */
+    PJ_ASSERT_RETURN(buffer != NULL, PJ_EINVAL);
+
+    /* buffer_size must be valid */
+    PJ_ASSERT_RETURN(buffer_size > 0, PJ_EINVAL);
+
+    PJ_LOG(4,(THIS_FILE, "Creating memory recorder with buffer_size %d..",
+	      (int)buffer_size));
+    pj_log_push_indent();
+
+    if (pjsua_var.rec_cnt >= PJ_ARRAY_SIZE(pjsua_var.recorder)) {
+	pj_log_pop_indent();
+	return PJ_ETOOMANY;
+    }
+
+    PJSUA_LOCK();
+
+    for (recorder_id=0; recorder_id<PJ_ARRAY_SIZE(pjsua_var.recorder); ++recorder_id) {
+	if (pjsua_var.recorder[recorder_id].port == NULL)
+	    break;
+    }
+
+    if (recorder_id == PJ_ARRAY_SIZE(pjsua_var.recorder)) {
+	/* This is unexpected */
+	pj_assert(0);
+	status = PJ_EBUG;
+	goto on_return;
+    }
+
+    pool = pjsua_pool_create(NULL, 1000, 1000);
+    if (!pool) {
+	status = PJ_ENOMEM;
+	goto on_return;
+    }
+
+    status = pjmedia_mem_capture_create(pool, buffer, buffer_size,
+					pjsua_var.media_cfg.clock_rate,
+					pjsua_var.mconf_cfg.channel_count,
+					pjsua_var.mconf_cfg.samples_per_frame,
+					pjsua_var.mconf_cfg.bits_per_sample,
+					options, &port);
+
+    if (status != PJ_SUCCESS) {
+	pjsua_perror(THIS_FILE, "Unable to create memory recorder", status);
+	goto on_return;
+    }
+
+    status = pjmedia_conf_add_port(pjsua_var.mconf, pool, port, NULL, &slot);
+    if (status != PJ_SUCCESS) {
+	pjmedia_port_destroy(port);
+	goto on_return;
+    }
+
+    pjsua_var.recorder[recorder_id].port = port;
+    pjsua_var.recorder[recorder_id].slot = slot;
+    pjsua_var.recorder[recorder_id].pool = pool;
+
+    if (p_id) *p_id = recorder_id;
+
+    ++pjsua_var.rec_cnt;
+
+    PJSUA_UNLOCK();
+
+    PJ_LOG(4,(THIS_FILE, "In memory recorder created, id=%d, slot=%d", recorder_id, slot));
+
+    pj_log_pop_indent();
+    return PJ_SUCCESS;
+
+on_return:
+    PJSUA_UNLOCK();
+    if (pool) pj_pool_release(pool);
+    pj_log_pop_indent();
+    return status;
+}
 
 /*
  * Get conference port associated with recorder.

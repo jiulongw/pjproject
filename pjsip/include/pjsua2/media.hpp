@@ -499,6 +499,10 @@ public:
 			pj_ssize_t max_size=0,
 			unsigned options=0) throw(Error);
 
+    void createMemoryRecorder(void* buffer,
+			      pj_size_t buffer_size,
+			      unsigned options=0) throw(Error);
+
     /**
      * Typecast from base class AudioMedia. This is useful for application
      * written in language that does not support downcasting such as Python.
@@ -514,11 +518,34 @@ public:
      */
     virtual ~AudioMediaRecorder();
 
+    int getRecorderId() const { return recorderId; }
+
+protected:
+    virtual bool onEof() { return true; }
+
 private:
     /**
      * Recorder Id.
      */
     int	recorderId;
+
+private:
+    /**
+     *  Low level PJMEDIA callback
+     */
+    static pj_status_t eof_cb(pjmedia_port *port,
+			      void *usr_data) {
+	PJ_UNUSED_ARG(port);
+	return ((AudioMediaRecorder*)usr_data)->onEof() ? PJ_SUCCESS : PJ_EEOF;
+    }
+
+    static pj_status_t eof_false_cb(pjmedia_port *port,
+				    void *usr_data) {
+	PJ_UNUSED_ARG(port);
+	PJ_UNUSED_ARG(usr_data);
+
+	return PJ_EEOF;
+    }
 };
 
 /**
