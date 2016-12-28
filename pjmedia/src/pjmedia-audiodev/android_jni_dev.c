@@ -796,7 +796,7 @@ static pj_status_t android_create_stream(pjmedia_aud_dev_factory *f,
         track_obj = (*jni_env)->NewObject(jni_env,
                                           stream->track_class,
                                           constructor_method,
-                                          0, /* STREAM_VOICE_CALL */
+                                          3, /* STREAM_MUSIC */
                                           param->clock_rate,
                                           channelOutCfg,
                                           sampleFormat,
