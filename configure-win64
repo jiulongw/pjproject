@@ -1,0 +1,27 @@
+#!/bin/sh
+
+TARGET_HOST="x86_64-pc-mingw32"
+
+export CC="x86_64-w64-mingw32-cc"
+export CXX="x86_64-w64-mingw32-c++"
+export AR="x86_64-w64-mingw32-ar"
+export RANLIB="x86_64-w64-mingw32-ranlib"
+export NM="x86_64-w64-mingw32-nm"
+
+export CFLAGS="${CFLAGS} -DPJ_QOS_IMPLEMENTATION=1 -DPJ_WIN64"
+
+# Print settings
+if test "1" = "1"; then
+  echo "$F: calling ./configure with env vars:"
+  echo " CC = ${CC}"
+  echo " CXX = ${CXX}"
+  echo " CFLAGS = ${CFLAGS}"
+  echo " CXXFLAGS = ${CXXFLAGS}"
+  echo " LDFLAGS = ${LDFLAGS}"
+  echo " LIBS = ${LIBS}"
+  echo " AR = ${AR}"
+  echo " RANLIB = ${RANLIB}"
+  echo " TARGET_HOST = ${TARGET_HOST}"
+fi
+
+./configure --host=${TARGET_HOST} $*
